@@ -41,8 +41,6 @@ public struct AnyDecodable: Decodable {
                 value = boolVal
             } else if let stringVal = try? container.decode(String.self) {
                 value = stringVal
-            } else if container.decodeNil() {
-                value = nil
             } else {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "the container contains nothing decodable")
             }
