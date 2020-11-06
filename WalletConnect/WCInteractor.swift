@@ -216,6 +216,11 @@ extension WCInteractor {
     }
 
     private func setupPingTimer() {
+        // Murat - Don't add more timers. Invalidate first if exists.
+        if (pingTimer?.isValid) {
+            pingTimer?.invalidate()
+        }
+        
         pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak socket] _ in
             WCLog("==> ping")
             socket?.write(ping: Data())
