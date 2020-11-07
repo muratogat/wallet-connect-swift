@@ -44,6 +44,7 @@ open class WCInteractor {
     private let socket: WebSocket
     private var handshakeId: Int64 = -1
     private weak var pingTimer: Timer?
+    private weak var keepAliveTimer: Timer?
     private weak var sessionTimer: Timer?
     private let sessionRequestTimeout: TimeInterval
 
@@ -68,7 +69,7 @@ open class WCInteractor {
         socket.onConnect = { [weak self] in self?.onConnect() }
         socket.onDisconnect = { [weak self] error in self?.onDisconnect(error: error) }
         socket.onText = { [weak self] text in self?.onReceiveMessage(text: text) }
-        socket.onPong = { _ in WCLog("<== pong") }
+        socket.onPong = { _ in /* WCLog("<== pong") */ }
         socket.onData = { data in WCLog("<== websocketDidReceiveData: \(data.toHexString())") }
     }
 
@@ -214,15 +215,22 @@ extension WCInteractor {
             }
         }
     }
-
-    private func setupPingTimer() {
+    
+    // Murat - Fully custom keep alive
+    private func setupKeepAlive() {
         // Murat - Don't add more timers. Invalidate first if exists.
         if (pingTimer?.isValid ?? false) {
             pingTimer?.invalidate()
         }
         
-        pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak socket] _ in
-            WCLog("==> ping")
+        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 131, repeats: true) { [weak socket] _ in
+            WCLog("-- keepAlive ---")
+            self.pause()
+            self.resume()
+        }
+        
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 23, repeats: true) { [weak socket] _ in
+            // WCLog("==> ping")
             socket?.write(ping: Data())
         }
     }
@@ -243,6 +251,7 @@ extension WCInteractor {
 
     private func stopTimers() {
         pingTimer?.invalidate()
+        keepAliveTimer?.invalidate()
         sessionTimer?.invalidate()
     }
 
@@ -256,7 +265,8 @@ extension WCInteractor {
     private func onConnect() {
         WCLog("<== websocketDidConnect")
 
-        setupPingTimer()
+        //setupPingTimer()
+        setupKeepAlive()
         checkExistingSession()
 
         subscribe(topic: session.topic)
