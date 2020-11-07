@@ -217,7 +217,7 @@ extension WCInteractor {
 
     private func setupPingTimer() {
         // Murat - Don't add more timers. Invalidate first if exists.
-        if (pingTimer?.isValid) {
+        if (pingTimer?.isValid ?? false) {
             pingTimer?.invalidate()
         }
         
