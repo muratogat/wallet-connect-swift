@@ -223,6 +223,10 @@ extension WCInteractor {
             pingTimer?.invalidate()
         }
         
+        if (keepAliveTimer?.isValid ?? false) {
+            keepAliveTimer?.invalidate()
+        }
+        
         keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 131, repeats: true) { [weak socket] _ in
             WCLog("-- keepAlive ---")
             self.pause()
