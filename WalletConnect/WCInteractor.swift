@@ -8,7 +8,7 @@ import Foundation
 import Starscream
 import PromiseKit
 
-public typealias SessionRequestClosure = (_ id: Int64, _ session: WCSession, _ peerParam: WCSessionRequestParam) -> Void
+public typealias SessionRequestClosure = (_ id: Int64, _ session: WCSession) -> Void
 public typealias DisconnectClosure = (Error?) -> Void
 public typealias CustomRequestClosure = (_ id: Int64, _ request: [String: Any]) -> Void
 public typealias ErrorClosure = (Error) -> Void
@@ -147,12 +147,20 @@ open class WCInteractor {
         return encryptAndSend(session: session, data: response.encoded)
     }
 
-    open func killSession(session: WCSession) -> Promise<Void> {
+    open func disconnectSession(session: WCSession) -> Promise<Void> {
         let result = WCSessionUpdateParam(approved: false, chainId: nil, accounts: nil)
         let response = JSONRPCRequest(id: generateId(), method: WCEvent.sessionUpdate.rawValue, params: [result])
         return encryptAndSend(session: session, data: response.encoded)
             .map { [weak self] in
-                self?.disconnect()
+                // Remove from sessions array. Removed from session store elsewhere
+                if let index = self?.sessions.firstIndex(of: session) {
+                    self?.sessions.remove(at: index)
+                }
+                
+                // Disconnect if no sessions left
+                if self?.sessions.count == 0 {
+                    self?.disconnect()
+                }
             }
     }
 
@@ -173,7 +181,7 @@ open class WCInteractor {
             session.peerId = params.peerId
             session.peerMeta = params.peerMeta
             sessionTimer?.invalidate()
-            onSessionRequest?(request.id, session, params)
+            onSessionRequest?(request.id, session)
             
         case .sessionUpdate:
             // topic == clientId

@@ -56,14 +56,12 @@ public struct WCSessionStore {
         return sessions
     }
 
-    public static func store(_ session: WCSession, peerId: String, peerMeta: WCPeerMeta, autoSign: Bool = false, date: Date = Date()) {
-        let item = WCSessionStoreItem(
-            session: session,
-            peerId: peerId,
-            peerMeta: peerMeta,
-            autoSign: autoSign,
-            date: date
-        )
+    public static func store(_ session: WCSession) {
+        let item = WCSessionStoreItem(session: session,
+                                      peerId: session.peerId!,
+                                      peerMeta: session.peerMeta!,
+                                      autoSign: false,
+                                      date: Date())
         store(item)
     }
 
