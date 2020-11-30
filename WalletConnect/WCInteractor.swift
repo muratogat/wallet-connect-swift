@@ -25,7 +25,7 @@ public enum WCInteractorState {
 open class WCInteractor {
     public let bridgeURL: URL
     public private(set) var state: WCInteractorState
-    public let sessions: [WCSession]
+    public var sessions: [WCSession]
     
     let clientMeta = WCPeerMeta(name: "Aktionariat iOS App", url: "https://aktionariat.com")
     
@@ -46,9 +46,6 @@ open class WCInteractor {
     private weak var keepAliveTimer: Timer?
     private weak var sessionTimer: Timer?
     private let sessionRequestTimeout: TimeInterval = 20
-
-    private var peerId: String?
-    private var peerMeta: WCPeerMeta?
 
     // Socket Init and Management
     public init(bridgeURL: URL) {
@@ -71,7 +68,7 @@ open class WCInteractor {
         disconnect()
     }
 
-    open func connect() -> Promise<Bool> {
+    public func connect() -> Promise<Bool> {
         if socket.isConnected {
             return Promise.value(true)
         }
@@ -79,6 +76,13 @@ open class WCInteractor {
         state = .connecting
         return Promise<Bool> { [weak self] seal in
             self?.connectResolver = seal
+        }
+    }
+    
+    public func reconnectExistingSessions() {
+        for session in WCSessionStore.getSessionsForBridge(url: bridgeURL) {
+            print("Reconnection to existing session: " + session.topic)
+            subscribeToSession(session: session)
         }
     }
 
@@ -105,10 +109,22 @@ open class WCInteractor {
     }
     
     // Connects a new session to this interactor. A session has both session.topic and clientId subscriptions.
-    func connectSession(session: WCSession) {
-        
+    public func subscribeToSession(session: WCSession) {
+        sessions.append(session)
+        subscribe(topic: session.topic)
+        subscribe(topic: session.clientId)
     }
 
+    public func getSessionByTopic(topic: String) -> WCSession? {
+        for session in sessions {
+            if (topic == session.topic || topic == session.clientId) {
+                print("Found Session for matching clientID : " + session.clientId)
+                return session
+            }
+        }
+        return nil
+    }
+    
     open func approveSession(session: WCSession, accounts: [String], chainId: Int) -> Promise<Void> {
         guard handshakeId > 0 else {
             return Promise(error: WCError.sessionInvalid)
@@ -147,14 +163,15 @@ open class WCInteractor {
     // Decodes the decrypted message into Payload objects and triggers callbacks, if set
     // For example, showing the approval sheet to the user
     private func handleEvent(_ event: WCEvent, session: WCSession, decrypted: Data) throws {
+        
         switch event {
         case .sessionRequest:
             // topic == session.topic
             let request: JSONRPCRequest<[WCSessionRequestParam]> = try event.decode(decrypted)
             guard let params = request.params.first else { throw WCError.badJSONRPCRequest }
             handshakeId = request.id
-            peerId = params.peerId
-            peerMeta = params.peerMeta
+            session.peerId = params.peerId
+            session.peerMeta = params.peerMeta
             sessionTimer?.invalidate()
             onSessionRequest?(request.id, session, params)
             
@@ -206,7 +223,7 @@ open class WCInteractor {
 
 // MARK: internal funcs
 extension WCInteractor {
-    private func subscribe(topic: String) {
+    public func subscribe(topic: String) {
         let message = WCSocketMessage(topic: topic, type: .sub, payload: "")
         let data = try! JSONEncoder().encode(message)
         socket.write(data: data)
@@ -218,7 +235,7 @@ extension WCInteractor {
         let encoder = JSONEncoder()
         let payload = try! WCEncryptor.encrypt(data: data, with: session.key)
         let payloadString = encoder.encodeAsUTF8(payload)
-        let message = WCSocketMessage(topic: peerId ?? session.topic, type: .pub, payload: payloadString)
+        let message = WCSocketMessage(topic: session.peerId ?? session.topic, type: .pub, payload: payloadString)
         let data = message.encoded
         return Promise { seal in
             socket.write(data: data) {
@@ -286,7 +303,7 @@ extension WCInteractor {
 
         //setupPingTimer()
         setupKeepAlive()
-        // connectExistingSessions()
+        reconnectExistingSessions()
 
         connectResolver?.fulfill(true)
         connectResolver = nil
@@ -312,12 +329,12 @@ extension WCInteractor {
     }
 
     private func onReceiveMessage(text: String) {
-        WCLog("<== receive: \(text)")
         // handle ping in text format :(
         if text == "ping" { return socket.write(pong: Data()) }
         guard let (topic, payload) = WCEncryptionPayload.extract(text) else { return }
+        WCLog("<== Received msg for topic: \(topic)")
         do {
-            guard let session = WCSessionStore.getSessionByTopic(topic: topic) else {
+            guard let session = getSessionByTopic(topic: topic) else {
                 WCLog("No session found for topic: " + topic)
                 return
             }
@@ -328,9 +345,10 @@ extension WCInteractor {
                 throw WCError.badJSONRPCRequest
             }
             
-            WCLog("<== decrypted: \(String(data: decrypted, encoding: .utf8)!)")
+            // WCLog("<== Decrypted Successfully: \(String(data: decrypted, encoding: .utf8)!)")
             
             if let method = json["method"] as? String {
+                WCLog("<== Decrypted Method: \(method)")
                 if let event = WCEvent(rawValue: method) {
                     try handleEvent(event, session: session, decrypted: decrypted)
                 } else if let id = json["id"] as? Int64 {

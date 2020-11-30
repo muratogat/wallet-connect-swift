@@ -7,12 +7,14 @@
 import Foundation
 import CryptoSwift
 
-public struct WCSession: Codable, Equatable {
+public class WCSession: Codable, Equatable {
     public let topic: String
     public let version: String
     public let bridge: URL
     public let key: Data
     public var clientId: String
+    public var peerId: String?
+    public var peerMeta: WCPeerMeta?
 
     public static func from(string: String) -> WCSession? {
         guard string .hasPrefix("wc:") else {
@@ -38,11 +40,21 @@ public struct WCSession: Codable, Equatable {
             let key = dicts["key"] else {
                 return nil
         }
-        
-        let clientId = UUID().uuidString
-        
-        print("Created UUID : " + clientId)
 
-        return WCSession(topic: topic, version: version, bridge: bridgeUrl, key: Data(hex: key), clientId: clientId)
+        return WCSession(topic: topic, version: version, bridge: bridgeUrl, key: Data(hex: key))
+    }
+    
+    public init(topic: String, version: String, bridge: URL, key: Data) {
+        self.topic = topic
+        self.version = version
+        self.bridge = bridge
+        self.key = key
+        self.clientId = UUID().uuidString.lowercased()
+        
+        print("Created UUID : " + self.clientId)
+    }
+    
+    public static func ==(lhs: WCSession, rhs: WCSession) -> Bool {
+        return lhs.topic == rhs.topic
     }
 }
