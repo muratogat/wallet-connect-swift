@@ -12,6 +12,7 @@ public struct WCSession: Codable, Equatable {
     public let version: String
     public let bridge: URL
     public let key: Data
+    public var clientId: String
 
     public static func from(string: String) -> WCSession? {
         guard string .hasPrefix("wc:") else {
@@ -37,7 +38,11 @@ public struct WCSession: Codable, Equatable {
             let key = dicts["key"] else {
                 return nil
         }
+        
+        let clientId = UUID().uuidString
+        
+        print("Created UUID : " + clientId)
 
-        return WCSession(topic: topic, version: version, bridge: bridgeUrl, key: Data(hex: key))
+        return WCSession(topic: topic, version: version, bridge: bridgeUrl, key: Data(hex: key), clientId: clientId)
     }
 }

@@ -22,6 +22,28 @@ public struct WCSessionStore {
         let sessions: [String: WCSessionStoreItem] = UserDefaults.standard.codableValue(forKey: prefix) ?? [:]
         return sessions
     }
+    
+    public static func getUniqueBridgeURLs() -> [URL] {
+        var bridges: [URL] = []
+        for (_, sessionStoreItem) in allSessions {
+            let bridgeURL = sessionStoreItem.session.bridge
+            if (!bridges.contains(bridgeURL)) {
+                bridges.append(bridgeURL)
+            }
+        }
+        print("Bridges: " + bridges.description)
+        return bridges
+    }
+    
+    public static func getSessionByTopic(topic: String) -> WCSession? {
+        for (_, sessionStoreItem) in allSessions {
+            if (topic == sessionStoreItem.session.topic || topic == sessionStoreItem.session.clientId) {
+                print("Found Session for message : " + sessionStoreItem.peerMeta.url)
+                return sessionStoreItem.session
+            }
+        }
+        return nil
+    }
 
     public static func store(_ session: WCSession, peerId: String, peerMeta: WCPeerMeta, autoSign: Bool = false, date: Date = Date()) {
         let item = WCSessionStoreItem(
