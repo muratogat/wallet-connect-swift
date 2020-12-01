@@ -8,10 +8,12 @@ import Foundation
 import Starscream
 import PromiseKit
 
-public typealias SessionRequestClosure = (_ id: Int64, _ peerParam: WCSessionRequestParam) -> Void
+public typealias SessionRequestClosure = (_ id: Int64, _ session: WCSession) -> Void
 public typealias DisconnectClosure = (Error?) -> Void
 public typealias CustomRequestClosure = (_ id: Int64, _ request: [String: Any]) -> Void
 public typealias ErrorClosure = (Error) -> Void
+public typealias EthSignClosure = (_ id: Int64, _ session: WCSession, _ payload: WCEthereumSignPayload) -> Void
+public typealias EthTransactionClosure = (_ id: Int64, _ session: WCSession, _ event: WCEvent, _ transaction: WCEthereumTransaction) -> Void
 
 public enum WCInteractorState {
     case connected
@@ -20,23 +22,17 @@ public enum WCInteractorState {
     case disconnected
 }
 
-open class WCInteractor {
-    public let session: WCSession
-
+public class WCInteractor {
+    public let bridgeURL: URL
     public private(set) var state: WCInteractorState
-
-    public let clientId: String
-    public let clientMeta: WCPeerMeta
-
-    public var eth: WCEthereumInteractor
-    public var bnb: WCBinanceInteractor
-    public var trust: WCTrustInteractor
-
+    public var sessions: [WCSession]
+    
+    let clientMeta = WCPeerMeta(name: "Aktionariat iOS App", url: "https://aktionariat.com")
+    
     // incoming event handlers
     public var onSessionRequest: SessionRequestClosure?
-    public var onDisconnect: DisconnectClosure?
-    public var onError: ErrorClosure?
-    public var onCustomRequest: CustomRequestClosure?
+    public var onSign: EthSignClosure?
+    public var onTransaction: EthTransactionClosure?
 
     // outgoing promise resolvers
     private var connectResolver: Resolver<Bool>?
@@ -46,25 +42,18 @@ open class WCInteractor {
     private weak var pingTimer: Timer?
     private weak var keepAliveTimer: Timer?
     private weak var sessionTimer: Timer?
-    private let sessionRequestTimeout: TimeInterval
+    private let sessionRequestTimeout: TimeInterval = 20
+    private var disconnectExpected: Bool = false
 
-    private var peerId: String?
-    private var peerMeta: WCPeerMeta?
-
-    public init(session: WCSession, meta: WCPeerMeta, uuid: UUID, sessionRequestTimeout: TimeInterval = 20) {
-        self.session = session
-        self.clientId = uuid.description.lowercased()
-        self.clientMeta = meta
-        self.sessionRequestTimeout = sessionRequestTimeout
+    // Socket Init and Management
+    public init(bridgeURL: URL) {
+        self.bridgeURL = bridgeURL
         self.state = .disconnected
-
-        var request = URLRequest(url: session.bridge)
+        self.sessions = []
+        
+        var request = URLRequest(url: bridgeURL)
         request.timeoutInterval = sessionRequestTimeout
         self.socket = WebSocket(request: request)
-
-        self.eth = WCEthereumInteractor()
-        self.bnb = WCBinanceInteractor()
-        self.trust = WCTrustInteractor()
 
         socket.onConnect = { [weak self] in self?.onConnect() }
         socket.onDisconnect = { [weak self] error in self?.onDisconnect(error: error) }
@@ -77,7 +66,7 @@ open class WCInteractor {
         disconnect()
     }
 
-    open func connect() -> Promise<Bool> {
+    public func connect() -> Promise<Bool> {
         if socket.isConnected {
             return Promise.value(true)
         }
@@ -87,18 +76,31 @@ open class WCInteractor {
             self?.connectResolver = seal
         }
     }
+    
+    public func reconnectExistingSessions() {
+        for session in WCSessionStore.getSessionsForBridge(url: bridgeURL) {
+            print("Reconnection to existing session: " + session.topic)
+            subscribeToSession(session: session)
+        }
+    }
 
-    open func pause() {
+    public func pause() {
+        self.disconnectExpected = true
+        
         state = .paused
         socket.disconnect(forceTimeout: nil, closeCode: CloseCode.goingAway.rawValue)
     }
 
-    open func resume() {
+    public func resume() {
+        self.disconnectExpected = false
+        
         socket.connect()
         state = .connecting
     }
 
-    open func disconnect() {
+    public func disconnect() {
+        self.disconnectExpected = true
+        
         stopTimers()
 
         socket.disconnect()
@@ -106,60 +108,81 @@ open class WCInteractor {
 
         connectResolver = nil
         handshakeId = -1
-
-        WCSessionStore.clear(session.topic)
+    }
+    
+    // Connects a new session to this interactor. A session has both session.topic and clientId subscriptions.
+    public func subscribeToSession(session: WCSession) {
+        sessions.append(session)
+        subscribe(topic: session.topic)
+        subscribe(topic: session.clientId)
     }
 
-    open func approveSession(accounts: [String], chainId: Int) -> Promise<Void> {
-        guard handshakeId > 0 else {
-            return Promise(error: WCError.sessionInvalid)
+    public func getSessionByTopic(topic: String) -> WCSession? {
+        for session in sessions {
+            if (topic == session.topic || topic == session.clientId) {
+                print("Found Session for matching clientID : " + session.clientId)
+                return session
+            }
         }
-        let result = WCApproveSessionResponse(
-            approved: true,
-            chainId: chainId,
-            accounts: accounts,
-            peerId: clientId,
-            peerMeta: clientMeta
-        )
+        return nil
+    }
+    
+    public func approveSession(session: WCSession, accounts: [String], chainId: Int) {
+        guard handshakeId > 0 else {
+            WCLog("Invalid Session")
+            return
+        }
+        
+        let result = WCApproveSessionResponse(approved: true, chainId: chainId, accounts: accounts, peerId: session.clientId, peerMeta: clientMeta)
         let response = JSONRPCResponse(id: handshakeId, result: result)
-        return encryptAndSend(data: response.encoded)
+        
+        encryptAndSend(session: session, data: response.encoded).cauterize()
+        
+        WCSessionStore.store(session)
     }
 
-    open func rejectSession(_ message: String = "Session Rejected") -> Promise<Void> {
+    public func rejectSession(session: WCSession, _ message: String = "Session Rejected") {
         guard handshakeId > 0 else {
-            return Promise(error: WCError.sessionInvalid)
+            WCLog("Invalid Session")
+            return
         }
+        
         let response = JSONRPCErrorResponse(id: handshakeId, error: JSONRPCError(code: -32000, message: message))
-        return encryptAndSend(data: response.encoded)
+        encryptAndSend(session: session, data: response.encoded).cauterize()
     }
 
-    open func killSession() -> Promise<Void> {
+    public func disconnectSession(session: WCSession) {
         let result = WCSessionUpdateParam(approved: false, chainId: nil, accounts: nil)
         let response = JSONRPCRequest(id: generateId(), method: WCEvent.sessionUpdate.rawValue, params: [result])
-        return encryptAndSend(data: response.encoded)
-            .map { [weak self] in
-                self?.disconnect()
-            }
-    }
-
-    open func approveBnbOrder(id: Int64, signed: WCBinanceOrderSignature) -> Promise<WCBinanceTxConfirmParam> {
-        let result = signed.encodedString
-        return approveRequest(id: id, result: result)
-            .then { _ -> Promise<WCBinanceTxConfirmParam> in
-                return Promise { [weak self] seal in
-                    self?.bnb.confirmResolvers[id] = seal
+        
+        encryptAndSend(session: session, data: response.encoded)
+            .done { [weak self] in
+                // Remove from sessions array. Removed from session store elsewhere
+                if let index = self?.sessions.firstIndex(of: session) {
+                    self?.sessions.remove(at: index)
+                }
+                
+                // Disconnect if no sessions left
+                if self?.sessions.count == 0 {
+                    self?.disconnect()
                 }
             }
+            .cauterize()
     }
 
-    open func approveRequest<T: Codable>(id: Int64, result: T) -> Promise<Void> {
+    // Approves the received request with the appropriate payload
+    // This is called after user confirmation
+    // ethSign : expects signed message
+    // ethSignTransaction: expects signed transaction
+    // ethSendTransaction: expects txid of signed and sent transaction
+    public func approveRequest<T: Codable>(id: Int64, session: WCSession, result: T) -> Promise<Void> {
         let response = JSONRPCResponse(id: id, result: result)
-        return encryptAndSend(data: response.encoded)
+        return encryptAndSend(session: session, data: response.encoded)
     }
 
-    open func rejectRequest(id: Int64, message: String) -> Promise<Void> {
+    public func rejectRequest(id: Int64, session: WCSession, message: String) -> Promise<Void> {
         let response = JSONRPCErrorResponse(id: id, error: JSONRPCError(code: -32000, message: message))
-        return encryptAndSend(data: response.encoded)
+        return encryptAndSend(session: session, data: response.encoded)
     }
 }
 
@@ -172,51 +195,22 @@ extension WCInteractor {
         WCLog("==> subscribe: \(String(data: data, encoding: .utf8)!)")
     }
 
-    private func encryptAndSend(data: Data) -> Promise<Void> {
-        WCLog("==> encrypt: \(String(data: data, encoding: .utf8)!) ")
+    private func encryptAndSend(session: WCSession, data: Data) -> Promise<Void> {
+        WCLog("==> Encrypt and Send: \(String(data: data, encoding: .utf8)!) ")
         let encoder = JSONEncoder()
         let payload = try! WCEncryptor.encrypt(data: data, with: session.key)
         let payloadString = encoder.encodeAsUTF8(payload)
-        let message = WCSocketMessage(topic: peerId ?? session.topic, type: .pub, payload: payloadString)
+        let message = WCSocketMessage(topic: session.peerId ?? session.topic, type: .pub, payload: payloadString)
         let data = message.encoded
         return Promise { seal in
             socket.write(data: data) {
-                WCLog("==> sent \(String(data: data, encoding: .utf8)!) ")
+                // WCLog("==> sent \(String(data: data, encoding: .utf8)!) ")
                 seal.fulfill(())
             }
         }
     }
 
-    private func handleEvent(_ event: WCEvent, topic: String, decrypted: Data) throws {
-        switch event {
-        case .sessionRequest:
-            // topic == session.topic
-            let request: JSONRPCRequest<[WCSessionRequestParam]> = try event.decode(decrypted)
-            guard let params = request.params.first else { throw WCError.badJSONRPCRequest }
-            handshakeId = request.id
-            peerId = params.peerId
-            peerMeta = params.peerMeta
-            sessionTimer?.invalidate()
-            onSessionRequest?(request.id, params)
-        case .sessionUpdate:
-            // topic == clientId
-            let request: JSONRPCRequest<[WCSessionUpdateParam]> = try event.decode(decrypted)
-            guard let param = request.params.first else { throw WCError.badJSONRPCRequest }
-            if param.approved == false {
-                disconnect()
-            }
-        default:
-            if WCEvent.eth.contains(event) {
-                try eth.handleEvent(event, topic: topic, decrypted: decrypted)
-            } else if WCEvent.bnb.contains(event) {
-                try bnb.handleEvent(event, topic: topic, decrypted: decrypted)
-            } else if WCEvent.trust.contains(event) {
-                try trust.handleEvent(event, topic: topic, decrypted: decrypted)
-            }
-        }
-    }
-    
-    // Murat - Fully custom keep alive
+    // Murat - Custom keep-alive
     private func setupKeepAlive() {
         // Murat - Don't add more timers. Invalidate first if exists.
         if (pingTimer?.isValid ?? false) {
@@ -227,29 +221,17 @@ extension WCInteractor {
             keepAliveTimer?.invalidate()
         }
         
-        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 131, repeats: true) { [weak socket] _ in
-            WCLog("-- keepAlive ---")
-            self.pause()
-            self.resume()
+        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 17, repeats: true) { [weak socket] _ in
+            if (!socket!.isConnected) {
+                WCLog("Socket Disconnected. Reconnecting.")
+                socket?.connect()
+                self.state = .connecting
+            }
         }
         
-        pingTimer = Timer.scheduledTimer(withTimeInterval: 23, repeats: true) { [weak socket] _ in
-            // WCLog("==> ping")
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak socket] _ in
+            WCLog("==> ping")
             socket?.write(ping: Data())
-        }
-    }
-
-    private func checkExistingSession() {
-        // check if it's an existing session
-        if let existing = WCSessionStore.load(session.topic), existing.session == session {
-            peerId = existing.peerId
-            peerMeta = existing.peerMeta
-            return
-        }
-
-        // we only setup timer for new sessions
-        sessionTimer = Timer.scheduledTimer(withTimeInterval: sessionRequestTimeout, repeats: false) { [weak self] _ in
-            self?.onSessionRequestTimeout()
         }
     }
 
@@ -269,12 +251,8 @@ extension WCInteractor {
     private func onConnect() {
         WCLog("<== websocketDidConnect")
 
-        //setupPingTimer()
         setupKeepAlive()
-        checkExistingSession()
-
-        subscribe(topic: session.topic)
-        subscribe(topic: clientId)
+        reconnectExistingSessions()
 
         connectResolver?.fulfill(true)
         connectResolver = nil
@@ -284,6 +262,13 @@ extension WCInteractor {
 
     private func onDisconnect(error: Error?) {
         WCLog("<== websocketDidDisconnect, error: \(error.debugDescription)")
+        
+        guard disconnectExpected else {
+            print("Unexpected Disconnect. Reconnecting.")
+            socket.connect()
+            state = .connecting
+            return
+        }
 
         stopTimers()
 
@@ -294,33 +279,98 @@ extension WCInteractor {
         }
 
         connectResolver = nil
-        onDisconnect?(error)
-
+        self.disconnectExpected = false
         state = .disconnected
     }
 
     private func onReceiveMessage(text: String) {
-        WCLog("<== receive: \(text)")
-        // handle ping in text format :(
-        if text == "ping" { return socket.write(pong: Data()) }
-        guard let (topic, payload) = WCEncryptionPayload.extract(text) else { return }
+        // Respond to ping
+        if (text == "ping") {
+            return socket.write(pong: Data())
+        }
+        
+        // Respond to real messages with payload
+        guard let (topic, payload) = WCEncryptionPayload.extract(text) else {
+            WCLog("Can't get payload of message: " + text)
+            return
+        }
+                
+        guard let session = getSessionByTopic(topic: topic) else {
+            WCLog("No session found for topic: " + topic)
+            return
+        }
+        
+        WCLog("<== Received msg for topic: \(topic) --- Peer: \(session.peerMeta?.url ?? "NOT SET YET")")
+        
         do {
             let decrypted = try WCEncryptor.decrypt(payload: payload, with: session.key)
-            guard let json = try JSONSerialization.jsonObject(with: decrypted, options: [])
-                as? [String: Any] else {
-                throw WCError.badJSONRPCRequest
+            
+            guard let json = try JSONSerialization.jsonObject(with: decrypted, options: []) as? [String: Any] else {
+                WCLog("Failed to deserialize payload.")
+                return
             }
-            WCLog("<== decrypted: \(String(data: decrypted, encoding: .utf8)!)")
-            if let method = json["method"] as? String {
-                if let event = WCEvent(rawValue: method) {
-                    try handleEvent(event, topic: topic, decrypted: decrypted)
-                } else if let id = json["id"] as? Int64 {
-                    onCustomRequest?(id, json)
-                }
+            
+            WCLog("<== Decrypted Successfully: \(String(data: decrypted, encoding: .utf8)!)")
+            
+            guard let method = json["method"] as? String else {
+                WCLog("Failed to parse received method.")
+                return
             }
-        } catch let error {
-            onError?(error)
+            
+            guard let event = WCEvent(rawValue: method) else {
+                WCLog("Unknown received method.")
+                return
+            }
+            
+            // Wow we made it here. Everything was correctly formatted and decrypted.
+            // Try handling it.
+            try handleEvent(event, session: session, decrypted: decrypted)
+        }
+        catch let error {
             WCLog("==> onReceiveMessage error: \(error.localizedDescription)")
         }
     }
+    
+    // Handles the incoming message AFTER DECRYPTION
+    // Decodes the decrypted message into Payload objects and triggers callbacks, if set
+    // For example, showing the approval sheet to the user
+    private func handleEvent(_ event: WCEvent, session: WCSession, decrypted: Data) throws {
+        switch event {
+        case .sessionRequest:
+            // topic == session.topic
+            let request: JSONRPCRequest<[WCSessionRequestParam]> = try event.decode(decrypted)
+            guard let params = request.params.first else { throw WCError.badJSONRPCRequest }
+            handshakeId = request.id
+            session.peerId = params.peerId
+            session.peerMeta = params.peerMeta
+            sessionTimer?.invalidate()
+            onSessionRequest?(request.id, session)
+            
+        case .sessionUpdate:
+            // topic == clientId
+            let request: JSONRPCRequest<[WCSessionUpdateParam]> = try event.decode(decrypted)
+            guard let param = request.params.first else { throw WCError.badJSONRPCRequest }
+            if param.approved == false {
+                disconnectSession(session: session)
+            }
+            
+        case .ethSign, .ethPersonalSign:
+            let request: JSONRPCRequest<[String]> = try event.decode(decrypted)
+            let payload = try JSONDecoder().decode(WCEthereumSignPayload.self, from: decrypted)
+            onSign?(request.id, session, payload)
+            
+        case .ethSignTypeData:
+             let payload = try JSONDecoder().decode(WCEthereumSignPayload.self, from: decrypted)
+             guard case .signTypeData(let id, _, _) = payload else {
+                return
+             }
+             onSign?(id, session, payload)
+            
+        case .ethSendTransaction, .ethSignTransaction:
+            let request: JSONRPCRequest<[WCEthereumTransaction]> = try event.decode(decrypted)
+            guard !request.params.isEmpty else { throw WCError.badJSONRPCRequest }
+            onTransaction?(request.id, session, event, request.params[0])
+        }
+    }
+    
 }
