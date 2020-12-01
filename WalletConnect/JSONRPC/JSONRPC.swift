@@ -15,7 +15,7 @@ struct JSONRPCError: Error, Codable {
 
 struct JSONRPCRequest<T: Codable>: Codable {
     let id: Int64
-    let jsonrpc = JSONRPCVersion
+    var jsonrpc = JSONRPCVersion
     let method: String
     let params: T
 }
@@ -39,7 +39,7 @@ struct JSONRPCResponse<T: Codable>: Codable {
 }
 
 struct JSONRPCErrorResponse: Codable {
-    let jsonrpc = JSONRPCVersion
+    var jsonrpc = JSONRPCVersion
     let id: Int64
     let error: JSONRPCError
 }
