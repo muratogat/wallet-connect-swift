@@ -31,7 +31,6 @@ public struct WCSessionStore {
                 bridges.append(bridgeURL)
             }
         }
-        print("Bridges: " + bridges.description)
         return bridges
     }
     

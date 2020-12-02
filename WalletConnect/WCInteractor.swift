@@ -120,7 +120,7 @@ public class WCInteractor {
     public func getSessionByTopic(topic: String) -> WCSession? {
         for session in sessions {
             if (topic == session.topic || topic == session.clientId) {
-                print("Found Session for matching clientID : " + session.clientId)
+                // print("Found Session for matching clientID : " + session.clientId)
                 return session
             }
         }
@@ -230,7 +230,7 @@ extension WCInteractor {
         }
         
         pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak socket] _ in
-            WCLog("==> ping")
+            // WCLog("==> ping")
             socket?.write(ping: Data())
         }
     }
