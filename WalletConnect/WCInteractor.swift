@@ -58,7 +58,7 @@ public class WCInteractor {
         socket.onConnect = { [weak self] in self?.onConnect() }
         socket.onDisconnect = { [weak self] error in self?.onDisconnect(error: error) }
         socket.onText = { [weak self] text in self?.onReceiveMessage(text: text) }
-        socket.onPong = { _ in /* WCLog("<== pong") */ }
+        socket.onPong = { _ in WCLog("<== pong") }
         socket.onData = { data in WCLog("<== websocketDidReceiveData: \(data.toHexString())") }
     }
 
@@ -155,19 +155,19 @@ public class WCInteractor {
         let result = WCSessionUpdateParam(approved: false, chainId: nil, accounts: nil)
         let response = JSONRPCRequest(id: generateId(), method: WCEvent.sessionUpdate.rawValue, params: [result])
         
-        encryptAndSend(session: session, data: response.encoded)
-            .done { [weak self] in
-                // Remove from sessions array. Removed from session store elsewhere
-                if let index = self?.sessions.firstIndex(of: session) {
-                    self?.sessions.remove(at: index)
-                }
-                
-                // Disconnect if no sessions left
-                if self?.sessions.count == 0 {
-                    self?.disconnect()
-                }
-            }
-            .cauterize()
+        encryptAndSend(session: session, data: response.encoded).cauterize()
+        
+        // Remove from sessions
+        if let index = self.sessions.firstIndex(of: session) {
+            self.sessions.remove(at: index)
+        }
+        
+        // Disconnect if no sessions left
+        if self.sessions.count == 0 {
+            self.disconnect()
+        }
+        
+        WCSessionStore.clear(session.topic)
     }
 
     // Approves the received request with the appropriate payload
@@ -230,7 +230,7 @@ extension WCInteractor {
         }
         
         pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak socket] _ in
-            // WCLog("==> ping")
+            WCLog("==> ping")
             socket?.write(ping: Data())
         }
     }
