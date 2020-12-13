@@ -58,7 +58,7 @@ public class WCInteractor {
         socket.onConnect = { [weak self] in self?.onConnect() }
         socket.onDisconnect = { [weak self] error in self?.onDisconnect(error: error) }
         socket.onText = { [weak self] text in self?.onReceiveMessage(text: text) }
-        socket.onPong = { _ in WCLog("<== pong") }
+        socket.onPong = { _ in /* WCLog("<== pong") */ }
         socket.onData = { data in WCLog("<== websocketDidReceiveData: \(data.toHexString())") }
     }
 
@@ -79,7 +79,7 @@ public class WCInteractor {
     
     public func reconnectExistingSessions() {
         for session in WCSessionStore.getSessionsForBridge(url: bridgeURL) {
-            print("Reconnection to existing session: " + session.topic)
+            // print("Reconnection to existing session: " + session.topic)
             subscribeToSession(session: session)
         }
     }
@@ -192,7 +192,7 @@ extension WCInteractor {
         let message = WCSocketMessage(topic: topic, type: .sub, payload: "")
         let data = try! JSONEncoder().encode(message)
         socket.write(data: data)
-        WCLog("==> subscribe: \(String(data: data, encoding: .utf8)!)")
+        // WCLog("==> subscribe: \(String(data: data, encoding: .utf8)!)")
     }
 
     private func encryptAndSend(session: WCSession, data: Data) -> Promise<Void> {
@@ -230,7 +230,7 @@ extension WCInteractor {
         }
         
         pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak socket] _ in
-            WCLog("==> ping")
+            // WCLog("==> ping")
             socket?.write(ping: Data())
         }
     }
@@ -249,7 +249,7 @@ extension WCInteractor {
 // MARK: WebSocket event handler
 extension WCInteractor {
     private func onConnect() {
-        WCLog("<== websocketDidConnect")
+        // WCLog("<== websocketDidConnect")
 
         setupKeepAlive()
         reconnectExistingSessions()

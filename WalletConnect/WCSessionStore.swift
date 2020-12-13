@@ -51,7 +51,7 @@ public struct WCSessionStore {
                 sessions.append(sessionStoreItem.session)
             }
         }
-        print("Sessions for Bridge: " + sessions.description)
+        // print("Sessions for Bridge: " + sessions.description)
         return sessions
     }
 
