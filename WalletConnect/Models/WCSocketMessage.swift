@@ -22,6 +22,7 @@ public struct WCSocketMessage<T: Codable>: Codable {
     public enum MessageType: String, Codable {
         case pub
         case sub
+        case ack
     }
     public let topic: String
     public let type: MessageType

@@ -40,10 +40,7 @@ public class WCInteractor {
     private let socket: WebSocket
     private var handshakeId: Int64 = -1
     private weak var pingTimer: Timer?
-    private weak var keepAliveTimer: Timer?
-    private weak var sessionTimer: Timer?
     private let sessionRequestTimeout: TimeInterval = 20
-    private var disconnectExpected: Bool = false
 
     // Socket Init and Management
     public init(bridgeURL: URL) {
@@ -85,27 +82,23 @@ public class WCInteractor {
     }
 
     public func pause() {
-        self.disconnectExpected = true
+        stopPing()
         
         state = .paused
         socket.disconnect(forceTimeout: nil, closeCode: CloseCode.goingAway.rawValue)
     }
 
     public func resume() {
-        self.disconnectExpected = false
-        
         socket.connect()
         state = .connecting
     }
 
-    public func disconnect() {
-        self.disconnectExpected = true
+    public func disconnect() {        
+        stopPing()
         
-        stopTimers()
-
         socket.disconnect()
         state = .disconnected
-
+        
         connectResolver = nil
         handshakeId = -1
     }
@@ -194,6 +187,13 @@ extension WCInteractor {
         socket.write(data: data)
         // WCLog("==> subscribe: \(String(data: data, encoding: .utf8)!)")
     }
+    
+    private func ack(topic: String) {
+        let message = WCSocketMessage(topic: topic, type: .ack, payload: "")
+        let data = try! JSONEncoder().encode(message)
+        socket.write(data: data)
+        print("Sent Ack");
+    }
 
     private func encryptAndSend(session: WCSession, data: Data) -> Promise<Void> {
         WCLog("==> Encrypt and Send: \(String(data: data, encoding: .utf8)!) ")
@@ -211,22 +211,10 @@ extension WCInteractor {
     }
 
     // Murat - Custom keep-alive
-    private func setupKeepAlive() {
+    private func schedulePing() {
         // Murat - Don't add more timers. Invalidate first if exists.
         if (pingTimer?.isValid ?? false) {
             pingTimer?.invalidate()
-        }
-        
-        if (keepAliveTimer?.isValid ?? false) {
-            keepAliveTimer?.invalidate()
-        }
-        
-        keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 17, repeats: true) { [weak socket] _ in
-            if (!socket!.isConnected) {
-                WCLog("Socket Disconnected. Reconnecting.")
-                socket?.connect()
-                self.state = .connecting
-            }
         }
         
         pingTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak socket] _ in
@@ -235,10 +223,8 @@ extension WCInteractor {
         }
     }
 
-    private func stopTimers() {
+    private func stopPing() {
         pingTimer?.invalidate()
-        keepAliveTimer?.invalidate()
-        sessionTimer?.invalidate()
     }
 
     private func onSessionRequestTimeout() {
@@ -249,28 +235,20 @@ extension WCInteractor {
 // MARK: WebSocket event handler
 extension WCInteractor {
     private func onConnect() {
-        // WCLog("<== websocketDidConnect")
-
-        setupKeepAlive()
+        WCLog("<== websocketDidConnect")
+        state = .connected
+        
         reconnectExistingSessions()
+        schedulePing()
 
         connectResolver?.fulfill(true)
         connectResolver = nil
-
-        state = .connected
     }
 
     private func onDisconnect(error: Error?) {
         WCLog("<== websocketDidDisconnect, error: \(error.debugDescription)")
-        
-        guard disconnectExpected else {
-            print("Unexpected Disconnect. Reconnecting.")
-            socket.connect()
-            state = .connecting
-            return
-        }
 
-        stopTimers()
+        stopPing()
 
         if let error = error {
             connectResolver?.reject(error)
@@ -279,7 +257,6 @@ extension WCInteractor {
         }
 
         connectResolver = nil
-        self.disconnectExpected = false
         state = .disconnected
     }
 
@@ -301,7 +278,7 @@ extension WCInteractor {
         }
         
         WCLog("<== Received msg for topic: \(topic) --- Peer: \(session.peerMeta?.url ?? "NOT SET YET")")
-        
+                
         do {
             let decrypted = try WCEncryptor.decrypt(payload: payload, with: session.key)
             
@@ -321,6 +298,9 @@ extension WCInteractor {
                 WCLog("Unknown received method.")
                 return
             }
+            
+            // Ack this connection
+            ack(topic: topic)
             
             // Wow we made it here. Everything was correctly formatted and decrypted.
             // Try handling it.
@@ -343,7 +323,6 @@ extension WCInteractor {
             handshakeId = request.id
             session.peerId = params.peerId
             session.peerMeta = params.peerMeta
-            sessionTimer?.invalidate()
             onSessionRequest?(request.id, session)
             
         case .sessionUpdate:

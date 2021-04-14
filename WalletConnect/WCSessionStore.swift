@@ -54,6 +54,17 @@ public struct WCSessionStore {
         // print("Sessions for Bridge: " + sessions.description)
         return sessions
     }
+    
+    public static func getSessionsByPeerURL(urlString: String) -> [WCSession] {
+        var sessions: [WCSession] = []
+        for (_, sessionStoreItem) in allSessions {
+            if (urlString == sessionStoreItem.session.peerMeta?.url) {
+                sessions.append(sessionStoreItem.session)
+            }
+        }
+        print("Sessions for URL: " + sessions.description)
+        return sessions
+    }
 
     public static func store(_ session: WCSession) {
         let item = WCSessionStoreItem(session: session,
