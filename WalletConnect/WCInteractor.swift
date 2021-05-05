@@ -65,18 +65,22 @@ public class WCInteractor {
 
     public func connect() -> Promise<Bool> {
         if socket.isConnected {
-            return Promise.value(true)
+            // print("Connected")
+            return Promise<Bool> { seal in
+                seal.fulfill(true)
+            }
         }
         socket.connect()
         state = .connecting
-        return Promise<Bool> { [weak self] seal in
-            self?.connectResolver = seal
+        return Promise<Bool> { [self] seal in
+            self.connectResolver = seal
+            print("Connecting")
         }
     }
     
     public func reconnectExistingSessions() {
         for session in WCSessionStore.getSessionsForBridge(url: bridgeURL) {
-            // print("Reconnection to existing session: " + session.topic)
+            print("Reconnection to existing session: " + session.topic)
             subscribeToSession(session: session)
         }
     }
@@ -192,11 +196,11 @@ extension WCInteractor {
         let message = WCSocketMessage(topic: topic, type: .ack, payload: "")
         let data = try! JSONEncoder().encode(message)
         socket.write(data: data)
-        print("Sent Ack");
+        // print("Sent Ack");
     }
 
     private func encryptAndSend(session: WCSession, data: Data) -> Promise<Void> {
-        WCLog("==> Encrypt and Send: \(String(data: data, encoding: .utf8)!) ")
+        // WCLog("==> Encrypt and Send: \(String(data: data, encoding: .utf8)!) ")
         let encoder = JSONEncoder()
         let payload = try! WCEncryptor.encrypt(data: data, with: session.key)
         let payloadString = encoder.encodeAsUTF8(payload)
@@ -241,6 +245,8 @@ extension WCInteractor {
         reconnectExistingSessions()
         schedulePing()
 
+        print(connectResolver != nil ? "YAY" : "NAY")
+        
         connectResolver?.fulfill(true)
         connectResolver = nil
     }
@@ -287,7 +293,7 @@ extension WCInteractor {
                 return
             }
             
-            WCLog("<== Decrypted Successfully: \(String(data: decrypted, encoding: .utf8)!)")
+            // WCLog("<== Decrypted Successfully: \(String(data: decrypted, encoding: .utf8)!)")
             
             guard let method = json["method"] as? String else {
                 WCLog("Failed to parse received method.")
